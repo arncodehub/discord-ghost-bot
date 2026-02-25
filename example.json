@@ -1,0 +1,7 @@
+{
+  "guilds": {
+    "GUILD_ID": {
+      "role_id": "ROLE_ID"
+    }
+  }
+}
