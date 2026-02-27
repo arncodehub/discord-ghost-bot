@@ -245,10 +245,9 @@ async def on_ready():
     # Load existing message times
     load_message_times()
     
-    # Scan history for guilds that haven't been scanned
+    # Always re-scan on startup to catch up during downtime
     for guild_id in config.get('guilds', {}).keys():
-        if str(guild_id) not in last_message_times:
-            await scan_guild_history(guild_id)
+        await scan_guild_history(guild_id)
     
     # Start the background task
     if not check_all_guilds.is_running():
