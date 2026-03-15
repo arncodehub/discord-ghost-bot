@@ -1,5 +1,5 @@
 import discord
-from discord.ext import tasks
+from discord.ext import commands, tasks
 from discord import app_commands
 import json
 import asyncio
@@ -28,13 +28,10 @@ intents.members = True
 intents.guilds = True
 intents.voice_states = True
 
-bot = discord.Client(intents=intents)
+bot = commands.Bot(command_prefix='/', intents=intents)
 
 # Track last message time for each user in each guild
 last_message_times = {}
-
-# Track last activity time for each channel in each guild
-channel_last_times = {}
 
 def load_message_times():
     """Load message times from file."""
@@ -50,20 +47,6 @@ def save_message_times():
     with open('message_times.json', 'w') as f:
         json.dump(last_message_times, f, indent=2)
 
-def load_channel_times():
-    """Load channel times from file."""
-    global channel_last_times
-    try:
-        with open('channel_times.json', 'r') as f:
-            channel_last_times = json.load(f)
-    except FileNotFoundError:
-        channel_last_times = {}
-
-def save_channel_times():
-    """Save channel times to file."""
-    with open('channel_times.json', 'w') as f:
-        json.dump(channel_last_times, f, indent=2)
-
 async def scan_guild_history(guild_id):
     """Initial scan of guild message history (last 30 days)."""
     guild = bot.get_guild(int(guild_id))
@@ -76,9 +59,6 @@ async def scan_guild_history(guild_id):
     if guild_key not in last_message_times:
         last_message_times[guild_key] = {}
     
-    if guild_key not in channel_last_times:
-        channel_last_times[guild_key] = {}
-    
     # Only scan last 30 days
     cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
     
@@ -87,7 +67,6 @@ async def scan_guild_history(guild_id):
         try:
             print(f"  Scanning #{channel.name}...")
             message_count = 0
-            latest_time = None
             async for message in channel.history(limit=None, after=cutoff_date):
                 if not message.author.bot:
                     user_id = str(message.author.id)
@@ -100,16 +79,11 @@ async def scan_guild_history(guild_id):
                         existing_time = datetime.fromisoformat(last_message_times[guild_key][user_id])
                         if message_time > existing_time:
                             last_message_times[guild_key][user_id] = message_time.isoformat()
-                    
-                    # Update channel latest time
-                    if latest_time is None or message_time > latest_time:
-                        latest_time = message_time
                 
                 message_count += 1
                 # Save periodically to avoid losing progress
                 if message_count % 1000 == 0:
                     save_message_times()
-                    save_channel_times()
                     await asyncio.sleep(1)  # Rate limit protection
                     
         except discord.Forbidden:
@@ -123,24 +97,48 @@ async def scan_guild_history(guild_id):
             print(f"  HTTP error scanning #{channel.name}: {e}")
             continue
         
-        # Set channel last time
-        channel_key = str(channel.id)
-        if latest_time:
-            channel_last_times[guild_key][channel_key] = latest_time.isoformat()
-        else:
-            channel_last_times[guild_key][channel_key] = None
+        # Small delay between channels
+        await asyncio.sleep(2)
+    
+    # Scan all voice channels
+    for channel in guild.voice_channels:
+        try:
+            print(f"  Scanning voice channel {channel.name}...")
+            message_count = 0
+            async for message in channel.history(limit=None, after=cutoff_date):
+                if not message.author.bot:
+                    user_id = str(message.author.id)
+                    message_time = message.created_at
+                    
+                    # Update user times
+                    if user_id not in last_message_times[guild_key]:
+                        last_message_times[guild_key][user_id] = message_time.isoformat()
+                    else:
+                        existing_time = datetime.fromisoformat(last_message_times[guild_key][user_id])
+                        if message_time > existing_time:
+                            last_message_times[guild_key][user_id] = message_time.isoformat()
+                
+                message_count += 1
+                # Save periodically to avoid losing progress
+                if message_count % 1000 == 0:
+                    save_message_times()
+                    await asyncio.sleep(1)  # Rate limit protection
+                    
+        except discord.Forbidden:
+            print(f"  No access to voice channel {channel.name}")
+            continue
+        except discord.HTTPException as e:
+            if e.status == 429:  # Rate limited
+                print(f"  Rate limited, waiting...")
+                await asyncio.sleep(60)
+                continue
+            print(f"  HTTP error scanning voice channel {channel.name}: {e}")
+            continue
         
         # Small delay between channels
         await asyncio.sleep(2)
     
-    # For voice channels, set to None since no history
-    for channel in guild.voice_channels:
-        channel_key = str(channel.id)
-        if channel_key not in channel_last_times[guild_key]:
-            channel_last_times[guild_key][channel_key] = None
-    
     save_message_times()
-    save_channel_times()
     print(f"✓ Finished scanning {guild.name}")
 
 async def update_inactive_role(guild_id, role_id):
@@ -233,35 +231,13 @@ async def on_message(message):
     
     guild_key = str(message.guild.id)
     user_id = str(message.author.id)
-    channel_key = str(message.channel.id)
     
     if guild_key not in last_message_times:
         last_message_times[guild_key] = {}
     
     last_message_times[guild_key][user_id] = message.created_at.isoformat()
-    
-    if guild_key not in channel_last_times:
-        channel_last_times[guild_key] = {}
-    
-    channel_last_times[guild_key][channel_key] = message.created_at.isoformat()
-    
     save_message_times()
-    save_channel_times()
 
-@bot.event
-async def on_voice_state_update(member, before, after):
-    """Track voice channel activity."""
-    if before.channel != after.channel:
-        channel = after.channel or before.channel
-        if channel and isinstance(channel, discord.VoiceChannel):
-            guild_key = str(channel.guild.id)
-            channel_key = str(channel.id)
-            
-            if guild_key not in channel_last_times:
-                channel_last_times[guild_key] = {}
-            
-            channel_last_times[guild_key][channel_key] = datetime.now(timezone.utc).isoformat()
-            save_channel_times()
 
 @tasks.loop(hours=24)
 async def check_all_guilds():
@@ -281,44 +257,47 @@ async def before_check():
 @bot.tree.command(name="deadchannels", description="List channels with no recent activity")
 @app_commands.describe(days="Number of days since last activity")
 async def deadchannels(interaction: discord.Interaction, days: int):
+    """Scan for dead channels in the guild."""
     guild = interaction.guild
     if not guild:
         await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
         return
     
-    guild_key = str(guild.id)
-    if guild_key not in channel_last_times:
-        channel_last_times[guild_key] = {}
+    await interaction.response.defer(ephemeral=False)
     
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     dead_channels = []
     
-    for channel in guild.channels:
-        channel_key = str(channel.id)
-        last_time_str = channel_last_times[guild_key].get(channel_key)
-        if last_time_str is None:
-            dead_channels.append(channel)
-        else:
-            last_time = datetime.fromisoformat(last_time_str)
-            if last_time < cutoff:
-                dead_channels.append(channel)
+    # Scan all text channels
+    for channel in guild.text_channels:
+        try:
+            latest_message_time = None
+            async for message in channel.history(limit=1):
+                latest_message_time = message.created_at
+                break
+            
+            if latest_message_time is None or latest_message_time < cutoff:
+                dead_channels.append((channel, latest_message_time))
+        except discord.Forbidden:
+            # Can't read history, assume dead
+            dead_channels.append((channel, None))
+        except Exception as e:
+            print(f"Error scanning {channel.name}: {e}")
     
     if not dead_channels:
         embed = discord.Embed(title=f"No dead channels in the last {days} days", color=0x00ff00)
     else:
         embed = discord.Embed(title=f"Dead channels (>{days} days inactive)", color=0xff0000)
         description = ""
-        for channel in dead_channels:
-            last_time_str = channel_last_times[guild_key].get(str(channel.id))
-            if last_time_str:
-                last_time = datetime.fromisoformat(last_time_str)
+        for channel, last_time in dead_channels:
+            if last_time:
                 days_ago = (datetime.now(timezone.utc) - last_time).days
-                description += f"#{channel.name} - last activity {days_ago} days ago\n"
+                description += f"{channel.mention} - last message {days_ago} days ago\n"
             else:
-                description += f"#{channel.name} - no activity recorded\n"
+                description += f"{channel.mention} - no recent activity or no access\n"
         embed.description = description
     
-    await interaction.response.send_message(embed=embed, ephemeral=False)
+    await interaction.followup.send(embed=embed)
 
 @bot.event
 async def on_ready():
@@ -351,7 +330,6 @@ async def on_ready():
     
     # Load existing message times
     load_message_times()
-    load_channel_times()
     
     # Always re-scan on startup to catch up during downtime
     for guild_id in config.get('guilds', {}).keys():
