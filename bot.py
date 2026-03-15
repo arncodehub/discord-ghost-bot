@@ -28,7 +28,7 @@ intents.members = True
 intents.guilds = True
 intents.voice_states = True
 
-bot = discord.Bot(intents=intents)
+bot = discord.Client(intents=intents)
 
 # Track last message time for each user in each guild
 last_message_times = {}
