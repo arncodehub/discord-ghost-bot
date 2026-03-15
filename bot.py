@@ -23,10 +23,9 @@ except json.JSONDecodeError as e:
     exit(1)
 
 intents = discord.Intents.default()
-intents.message_content = True
 intents.members = True
-intents.guilds = True
-intents.voice_states = True
+intents.voice_states = False
+
 
 bot = commands.Bot(command_prefix='/', intents=intents)
 
