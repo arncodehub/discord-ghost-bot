@@ -1,3 +1,5 @@
 .env
 config.json
 message_times.json
+__pycache__
+channel_times.json
