@@ -59,7 +59,7 @@ async def scan_guild_history(guild_id):
         last_message_times[guild_key] = {}
     
     # Only scan last 30 days
-    cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
     
     # Scan all text channels
     for channel in guild.text_channels:
@@ -140,87 +140,65 @@ async def scan_guild_history(guild_id):
     save_message_times()
     print(f"✓ Finished scanning {guild.name}")
 
-async def update_inactive_role(guild_id, role_id):
-    """Update the inactive role for a guild."""
+async def update_inactive_role(guild_id, rules):
+    """Update inactive roles for a guild based on multiple rules."""
     guild = bot.get_guild(int(guild_id))
     if not guild:
-        print(f"ERROR: Guild {guild_id} not found! Bot may not be in this server.")
+        print(f"ERROR: Guild {guild_id} not found!")
         return
 
-    role = guild.get_role(int(role_id))
-    if not role:
-        print(f"ERROR: Role {role_id} not found in guild '{guild.name}' ({guild_id})!")
-        print(f"  Available roles in {guild.name}:")
-        for r in guild.roles:
-            print(f"    - {r.name} (ID: {r.id})")
-        return
-
-    print(f"Checking inactive members for {guild.name}")
-    
-    # Calculate cutoff date (30 days ago)
-    cutoff_date = datetime.now(timezone.utc) - timedelta(days=30)
+    print(f"Checking inactive members for {guild.name}...")
     guild_key = str(guild_id)
+    now = datetime.now(timezone.utc)
     
     if guild_key not in last_message_times:
         last_message_times[guild_key] = {}
 
-    members_to_add = []
-    members_to_remove = []
-
-    # Check each member
     try:
         async for member in guild.fetch_members(limit=None):
             if member.bot:
                 continue
             
             user_id = str(member.id)
+            user_last_seen_str = last_message_times[guild_key].get(user_id)
             
-            # Check if user has sent messages recently
-            if user_id in last_message_times[guild_key]:
-                last_message = datetime.fromisoformat(last_message_times[guild_key][user_id])
-                # Make timezone aware if needed
+            if user_last_seen_str:
+                last_message = datetime.fromisoformat(user_last_seen_str)
                 if last_message.tzinfo is None:
                     last_message = last_message.replace(tzinfo=timezone.utc)
+                days_inactive = (now - last_message).days
+            else:
+                # If never seen, treat as very inactive (e.g., 999 days)
+                days_inactive = 999
+
+            # Process each rule for this member
+            for rule in rules:
+                role_id = int(rule['role_id'])
+                required_days = rule['days']
+                role = guild.get_role(role_id)
                 
-                has_recent_messages = last_message > cutoff_date
-            else:
-                # No messages tracked, assume inactive
-                has_recent_messages = False
+                if not role:
+                    continue
 
-            if has_recent_messages:
-                if role in member.roles:
-                    members_to_remove.append(member)
-            else:
-                if role not in member.roles:
-                    members_to_add.append(member)
-    except discord.Forbidden:
-        print(f"ERROR: Missing 'Server Members Intent' permission for guild {guild.name}")
-        return
+                if days_inactive >= required_days:
+                    # Should have the role
+                    if role not in member.roles:
+                        try:
+                            await member.add_roles(role, reason=f"Inactive for {days_inactive} days")
+                            print(f"  [+] {role.name} added to {member.name}")
+                        except discord.Forbidden:
+                            print(f"  [!] Missing permissions for {role.name} on {member.name}")
+                else:
+                    # Should NOT have the role
+                    if role in member.roles:
+                        try:
+                            await member.remove_roles(role, reason=f"Active (Last seen {days_inactive} days ago)")
+                            print(f"  [-] {role.name} removed from {member.name}")
+                        except discord.Forbidden:
+                            print(f"  [!] Missing permissions to remove {role.name}")
+
     except Exception as e:
-        print(f"ERROR: Failed to fetch members for {guild.name}: {e}")
-        return
-
-    # Add members who should have the role
-    for member in members_to_add:
-        try:
-            await member.add_roles(role, reason="No messages in last 30 days")
-            print(f"  Added role to {member.name}")
-        except discord.Forbidden:
-            print(f"  ERROR: Cannot add role to {member.name} - missing 'Manage Roles' permission")
-        except Exception as e:
-            print(f"  ERROR: Failed to add role to {member.name}: {e}")
-
-    # Remove members who should not have the role
-    for member in members_to_remove:
-        try:
-            await member.remove_roles(role, reason="Has sent messages in last 30 days")
-            print(f"  Removed role from {member.name}")
-        except discord.Forbidden:
-            print(f"  ERROR: Cannot remove role from {member.name} - missing 'Manage Roles' permission")
-        except Exception as e:
-            print(f"  ERROR: Failed to remove role from {member.name}: {e}")
-    
-    print(f"✓ Finished: +{len(members_to_add)} inactive, -{len(members_to_remove)} active")
+        print(f"ERROR: Failed processing {guild.name}: {e}")
 
 @bot.event
 async def on_message(message):
@@ -237,15 +215,14 @@ async def on_message(message):
     last_message_times[guild_key][user_id] = message.created_at.isoformat()
     save_message_times()
 
-
 @tasks.loop(hours=24)
 async def check_all_guilds():
     """Check all configured guilds for inactive members."""
     for guild_id, guild_config in config.get('guilds', {}).items():
-        role_id = guild_config.get('role_id')
-        if role_id:
+        rules = guild_config.get('rules', [])
+        if rules:
             try:
-                await update_inactive_role(guild_id, role_id)
+                await update_inactive_role(guild_id, rules)
             except Exception as e:
                 print(f"Error checking guild {guild_id}: {e}")
 
