@@ -306,7 +306,7 @@ async def on_ready():
         
         for rule in rules:
             role_id = rule.get('role_id')
-            days = role.get('days')
+            days = rule.get('days')
             role = guild.get_role(int(role_id))
 
             if not role:
