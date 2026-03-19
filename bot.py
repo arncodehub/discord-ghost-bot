@@ -47,19 +47,30 @@ def save_message_times():
         json.dump(last_message_times, f, indent=2)
 
 async def scan_guild_history(guild_id):
-    """Initial scan of guild message history (last 30 days)."""
+    """Initial scan of guild history adaptive to the longest configured rule."""
     guild = bot.get_guild(int(guild_id))
     if not guild:
         return
     
-    print(f"Scanning message history for {guild.name} (last 30 days)...")
+    # Find the maximum days requirement across all rules for this guild
+    guild_config = config.get('guilds', {}).get(str(guild_id), {})
+    rules = guild_config.get('rules', [])
+
+    if not rules:
+        print(f"[!] No rules found for {guild.name}, skipping scan.")
+        return
+    
+    # Default to 30 if somehow empty, otherwise take the max 'days' value
+    max_days = max([rule.get('days', 30) for rule in rules])
+
+    print(f"Scanning message history for {guild.name} (last {max_days} days)...")
     guild_key = str(guild_id)
     
     if guild_key not in last_message_times:
         last_message_times[guild_key] = {}
     
-    # Only scan last 30 days
-    cutoff_date = datetime.now(timezone.utc) - timedelta(days=90)
+    # Only scan last 90 days
+    cutoff_date = datetime.now(timezone.utc) - timedelta(days=max_days)
     
     # Scan all text channels
     for channel in guild.text_channels:
@@ -285,25 +296,26 @@ async def on_ready():
     for guild_id, guild_config in config.get('guilds', {}).items():
         guild = bot.get_guild(int(guild_id))
         if not guild:
-            print(f"  ERROR: Guild {guild_id} not found! Bot is not in this server.")
+            print(f"ERROR: Guild {guild_id} not found!")
             continue
         
-        role_id = guild_config.get('role_id')
-        if not role_id:
-            print(f"  ERROR: No role_id specified for guild {guild.name} ({guild_id})")
+        rules = guild_config.get('rules', [])
+        if not rules:
+            print(f"ERROR: No 'rules' list found for guild {guild.name} ({guild.id})")
             continue
         
-        role = guild.get_role(int(role_id))
-        if not role:
-            print(f"  ERROR: Role {role_id} not found in guild {guild.name}")
-            print(f"    Available roles:")
-            for r in guild.roles:
-                print(f"      - {r.name} (ID: {r.id})")
-        else:
-            print(f"  ✓ Guild: {guild.name} | Role: {role.name}")
-    
+        for rule in rules:
+            role_id = rule.get('role_id')
+            days = role.get('days')
+            role = guild.get_role(int(role_id))
+
+            if not role:
+                print(f"ERROR: Role {role_id} not found in {guild.name}")
+            else:
+                print(f"✓ {guild.name} | Role: {role.name} ({days} days)")
+
     print('\n------')
-    
+
     # Load existing message times
     load_message_times()
     
